@@ -1,0 +1,277 @@
+// ============================================
+// GHANA SAAS — DATABASE SCHEMA
+// One schema, one database, thousands of tenants.
+// Every business-owned table carries a businessId FK.
+// This IS the tenant boundary.
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- AUTH / OWNERS ----------
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  phone        String?
+  passwordHash String
+  createdAt    DateTime   @default(now())
+  businesses   Business[] // one owner can eventually run multiple businesses
+
+  @@map("users")
+}
+
+// ---------- CORE TENANT ENTITY ----------
+
+enum PlanTier {
+  FREE
+  BASIC
+  PREMIUM
+}
+
+enum BusinessStatus {
+  DRAFT      // owner is still filling in info, not published
+  ACTIVE
+  SUSPENDED  // e.g. non-payment
+}
+
+enum TemplateId {
+  RESTAURANT
+  SALON
+  FASHION
+  MECHANIC
+  SCHOOL
+  CONSTRUCTION
+  RETAIL
+  PROFESSIONAL_SERVICES
+}
+
+model Business {
+  id            String         @id @default(cuid())
+  ownerId       String
+  owner         User           @relation(fields: [ownerId], references: [id])
+
+  // Identity
+  name          String
+  slug          String         @unique   // used in yourapp.com/b/{slug} and as default subdomain
+  description   String?
+  templateId    TemplateId     @default(RETAIL)
+  status        BusinessStatus @default(DRAFT)
+  planTier      PlanTier       @default(FREE)
+
+  // Contact
+  phone         String?
+  whatsapp      String?        // stored as full international number, e.g. 233241234567
+  email         String?
+
+  // Location
+  addressText   String?
+  latitude      Float?
+  longitude     Float?
+
+  // Branding
+  logoUrl       String?
+  coverPhotoUrl String?
+  primaryColor  String?        // optional override within a template's theme
+
+  // SEO
+  metaTitle       String?
+  metaDescription String?
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  products      Product[]
+  photos        Photo[]
+  hours         BusinessHour[]
+  socialLinks   SocialLink[]
+  domain        CustomDomain?
+  contactForms  ContactSubmission[]
+  analyticsEvents AnalyticsEvent[]
+  payments      Payment[]
+
+  @@index([ownerId])
+  @@map("businesses")
+}
+
+// ---------- PRODUCTS / SERVICES ----------
+
+model Product {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  price       Decimal? @db.Decimal(10, 2)
+  currency    String   @default("GHS")
+  imageUrl    String?
+  category    String?
+  isAvailable Boolean  @default(true)
+  sortOrder   Int      @default(0)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([businessId])
+  @@map("products")
+}
+
+// ---------- PHOTOS (gallery, separate from product images) ----------
+
+model Photo {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  url        String
+  caption    String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([businessId])
+  @@map("photos")
+}
+
+// ---------- OPENING HOURS ----------
+
+enum DayOfWeek {
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+  SUN
+}
+
+model BusinessHour {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  day        DayOfWeek
+  isClosed   Boolean   @default(false)
+  openTime   String?   // "09:00"
+  closeTime  String?   // "18:00"
+
+  @@unique([businessId, day])
+  @@map("business_hours")
+}
+
+// ---------- SOCIAL LINKS ----------
+
+enum SocialPlatform {
+  INSTAGRAM
+  FACEBOOK
+  TIKTOK
+  TWITTER_X
+  YOUTUBE
+  LINKEDIN
+}
+
+model SocialLink {
+  id         String         @id @default(cuid())
+  businessId String
+  business   Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  platform   SocialPlatform
+  url        String
+
+  @@unique([businessId, platform])
+  @@map("social_links")
+}
+
+// ---------- CUSTOM DOMAINS (premium feature) ----------
+
+model CustomDomain {
+  id           String   @id @default(cuid())
+  businessId   String   @unique
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  domain       String   @unique  // e.g. "mybusiness.com"
+  isVerified   Boolean  @default(false)
+  sslIssuedAt  DateTime?
+  createdAt    DateTime @default(now())
+
+  @@map("custom_domains")
+}
+
+// ---------- CONTACT FORM SUBMISSIONS ----------
+
+model ContactSubmission {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  name       String
+  phone      String?
+  email      String?
+  message    String
+  createdAt  DateTime @default(now())
+
+  @@index([businessId])
+  @@map("contact_submissions")
+}
+
+// ---------- BILLING / PAYMENTS ----------
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum PaymentChannel {
+  MTN_MOMO
+  VODAFONE_CASH
+  AIRTELTIGO_MONEY
+  CARD
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  businessId  String
+  business    Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  amount      Decimal       @db.Decimal(10, 2)
+  currency    String        @default("GHS")
+  channel     PaymentChannel
+  status      PaymentStatus @default(PENDING)
+  reference   String        @unique // provider's transaction reference
+  planTier    PlanTier      // plan this payment upgrades the business to
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([businessId])
+  @@map("payments")
+}
+
+// ---------- ANALYTICS (lightweight, page-view level) ----------
+
+enum EventType {
+  PAGE_VIEW
+  WHATSAPP_CLICK
+  CALL_CLICK
+  MAP_CLICK
+  CONTACT_SUBMIT
+}
+
+model AnalyticsEvent {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  type       EventType
+  createdAt  DateTime  @default(now())
+
+  @@index([businessId, type, createdAt])
+  @@map("analytics_events")
+}
